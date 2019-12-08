@@ -1,10 +1,7 @@
 package resolver
 
 import (
-	"bytes"
-	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 
@@ -23,7 +20,7 @@ type RevResolver struct {
 func (r *RevResolver) Resolve(args []string) (repo.FileOpener, interface{}, error) {
 	if len(args) == 2 {
 		path, rev := args[1], args[0]
-		return r.Repo.Get(path, rev)
+		return r.Repo.GetFileOpener(path, rev)
 	} else {
 		return nil, nil, errors.New("RevResolver#Resolve requires 2 args")
 	}
@@ -101,24 +98,4 @@ func NewDefaultResolver(projectPath string, rp *repo.Repo) Resolver {
 		},
 	}
 	return &res
-}
-
-func Main(args []string) {
-	rp, err := repo.Open(args[1])
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer rp.Close()
-	res := NewDefaultResolver(args[1], rp)
-	fo, _, err := res.Resolve(args[2:])
-	if err != nil {
-		log.Fatal(err)
-	}
-	f, err := fo()
-	if err != nil {
-		log.Fatal(err)
-	}
-	buf := bytes.Buffer{}
-	io.Copy(&buf, f)
-	fmt.Println(buf.String())
 }
