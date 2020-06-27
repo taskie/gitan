@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"io/ioutil"
+	"strings"
 	"time"
 
 	"gopkg.in/src-d/go-git.v4/plumbing/object"
@@ -61,6 +62,99 @@ func NewFileStat(f *object.File) (*FileStat, error) {
 		Size:     f.Size,
 		IsBinary: isBinary,
 	}, nil
+}
+
+type TreeEntry struct {
+	Hash string `json:"hash"`
+	Name string `json:"name"`
+	Mode uint32 `json:"mode"`
+}
+
+func NewTreeEntry(te *object.TreeEntry) (*TreeEntry, error) {
+	buf := bytes.NewReader(te.Mode.Bytes())
+	var mode uint32
+	err := binary.Read(buf, binary.LittleEndian, &mode)
+	if err != nil {
+		return nil, err
+	}
+	return &TreeEntry{
+		Hash: te.Hash.String(),
+		Name: te.Name,
+		Mode: mode,
+	}, nil
+}
+
+func gitPathJoin(elems ...string) string {
+	sep := "/"
+	xs := make([]string, 0)
+	for _, elem := range elems {
+		if elem != "" {
+			xs = append(xs, elem)
+		}
+	}
+	return strings.Join(xs, sep)
+}
+
+func (r *Repo) Find(path string, rev string, maxDepth int) ([]*TreeEntry, error) {
+	results := make([]*TreeEntry, 0)
+	stack := []string{""}
+	for len(stack) > 0 {
+		idx := len(stack) - 1
+		if maxDepth > 0 && len(stack) > maxDepth {
+			stack = stack[:idx]
+			continue
+		}
+		p := stack[idx]
+		stack = stack[:idx]
+		treePath := gitPathJoin(path, p)
+		tes, err := r.GetTree(treePath, rev)
+		if err != nil {
+			return nil, err
+		}
+		for _, te := range tes {
+			childPath := gitPathJoin(p, te.Name)
+			if te.Mode&0040000 != 0 {
+				stack = append(stack, childPath)
+			}
+			results = append(results, &TreeEntry{
+				Hash: te.Hash,
+				Name: childPath,
+				Mode: te.Mode,
+			})
+		}
+	}
+	return results, nil
+}
+
+func (r *Repo) GetTree(path string, rev string) ([]*TreeEntry, error) {
+	h, err := r.repository.ResolveRevision(plumbing.Revision(rev))
+	if err != nil {
+		return nil, errors.Wrap(err, "resolving rev failed")
+	}
+	ci, err := r.repository.CommitObject(*h)
+	if err != nil {
+		return nil, errors.Wrap(err, "obtaining commit failed")
+	}
+	tree, err := ci.Tree()
+	if err != nil {
+		return nil, errors.Wrap(err, "obtaining tree from commit failed")
+	}
+	var targetTree *object.Tree = tree
+	if path != "" {
+		targetTree, err = tree.Tree(path)
+		if err != nil {
+			return nil, errors.Wrap(err, "obtaining file or directory failed")
+		}
+	}
+	results := make([]*TreeEntry, 0)
+	for _, te := range targetTree.Entries {
+		result, err := NewTreeEntry(&te)
+		if err != nil {
+			return nil, errors.Wrap(err, "invalid tree entry")
+		}
+		results = append(results, result)
+	}
+	return results, nil
 }
 
 // Get resolves revison and file name

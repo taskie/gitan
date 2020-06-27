@@ -13,10 +13,11 @@ import (
 )
 
 type Config struct {
-	Address   string                 `json:"address"`
-	Repos     map[string]*RepoConfig `json:"repos"`
-	MultiUser bool                   `json:"multi_user"`
-	BlobOnly  bool                   `json:"blob_only"`
+	Address      string                 `json:"address"`
+	Repos        map[string]*RepoConfig `json:"repos"`
+	MultiUser    bool                   `json:"multi_user"`
+	BlobOnly     bool                   `json:"blob_only"`
+	TreeMaxDepth int                    `json:"tree_max_depth"`
 }
 
 type RepoConfig struct {
@@ -33,19 +34,21 @@ func NewServer(conf *Config) (*Server, error) {
 		m[k] = r
 	}
 	srv := Server{
-		Address:   conf.Address,
-		Registry:  m,
-		MultiUser: conf.MultiUser,
-		BlobOnly:  conf.BlobOnly,
+		Address:      conf.Address,
+		Registry:     m,
+		MultiUser:    conf.MultiUser,
+		BlobOnly:     conf.BlobOnly,
+		TreeMaxDepth: conf.TreeMaxDepth,
 	}
 	return &srv, nil
 }
 
 type Server struct {
-	Address   string
-	Registry  map[string]*repo.Repo
-	MultiUser bool
-	BlobOnly  bool
+	Address      string
+	Registry     map[string]*repo.Repo
+	MultiUser    bool
+	BlobOnly     bool
+	TreeMaxDepth int
 }
 
 func catHandler(s *Server) func(c *gin.Context) {
@@ -87,6 +90,32 @@ func blobHandler(s *Server) func(c *gin.Context) {
 	}
 }
 
+func treeHandler(s *Server) func(c *gin.Context) {
+	return func(c *gin.Context) {
+		repoKey := c.Param("repo")
+		if s.MultiUser {
+			repoKey = c.Param("user") + "/" + repoKey
+		}
+		path := strings.TrimLeft(c.Param("path"), "/")
+		rev := c.Param("rev")
+		r := s.Registry[repoKey]
+		pp.Println(s)
+		log.Println(repoKey, path, rev, r)
+		var tes []*repo.TreeEntry
+		var err error
+		if s.TreeMaxDepth != 0 && c.Query("recursive") == "true" {
+			tes, err = r.Find(path, rev, s.TreeMaxDepth)
+		} else {
+			tes, err = r.GetTree(path, rev)
+		}
+		if err != nil {
+			c.JSON(404, gin.H{"ok": false, "error": err.Error()})
+		} else {
+			c.JSON(200, gin.H{"ok": true, "entries": tes})
+		}
+	}
+}
+
 func (s *Server) Run() {
 	r := gin.Default()
 	r.GET("/", func(c *gin.Context) { c.Data(200, "text/html", []byte("<h1>gitan</h1>")) })
@@ -98,6 +127,7 @@ func (s *Server) Run() {
 		repoGroup.GET("/:rev/*path", blobHandler(s))
 	} else {
 		repoGroup.GET("/blob/:rev/*path", blobHandler(s))
+		repoGroup.GET("/tree/:rev/*path", treeHandler(s))
 		repoGroup.GET("/cat/:hash", catHandler(s))
 		repoGroup.GET("/commit/:rev", commitHandler(s))
 	}
@@ -127,7 +157,13 @@ func Main(args []string) {
 	conf := &Config{}
 	err := jc.DecodeFile(path, "", conf)
 	if err != nil {
-		log.Fatal(err)
+		conf = &Config{
+			Repos: map[string]*RepoConfig{
+				"gitan": &RepoConfig{
+					Path: ".git",
+				},
+			},
+		}
 	}
 	srv, err := NewServer(conf)
 	if err != nil {
