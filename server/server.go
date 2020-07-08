@@ -18,6 +18,7 @@ type Config struct {
 	MultiUser    bool                   `json:"multi_user" toml:"multi_user" yaml:"address"`
 	BlobOnly     bool                   `json:"blob_only" toml:"blob_only" yaml:"address"`
 	TreeMaxDepth int                    `json:"tree_max_depth" toml:"tree_max_depth" yaml:"address"`
+	BathPath     string                 `json:"base_path" toml:"base_path" yaml:"base_path"`
 }
 
 type RepoConfig struct {
@@ -33,13 +34,20 @@ func NewServer(conf *Config) (*Server, error) {
 		}
 		m[k] = r
 	}
-	pp.Println(conf)
+	basePath := conf.BathPath
+	if !strings.HasPrefix(basePath, "/") {
+		basePath = "/" + basePath
+	}
+	if !strings.HasSuffix(basePath, "/") {
+		basePath += "/"
+	}
 	srv := Server{
 		Address:      conf.Address,
 		Registry:     m,
 		MultiUser:    conf.MultiUser,
 		BlobOnly:     conf.BlobOnly,
 		TreeMaxDepth: conf.TreeMaxDepth,
+		BathPath:     basePath,
 	}
 	return &srv, nil
 }
@@ -50,6 +58,7 @@ type Server struct {
 	MultiUser    bool
 	BlobOnly     bool
 	TreeMaxDepth int
+	BathPath     string
 }
 
 func catHandler(s *Server) func(c *gin.Context) {
@@ -119,10 +128,13 @@ func treeHandler(s *Server) func(c *gin.Context) {
 
 func (s *Server) Run() {
 	r := gin.Default()
-	r.GET("/", func(c *gin.Context) { c.Data(200, "text/html", []byte("<h1>gitan</h1>")) })
-	repoGroup := r.Group("/:repo")
+	rootGroup := r.Group(s.BathPath)
+	rootGroup.GET("/", func(c *gin.Context) { c.Data(200, "text/html", []byte("<h1>gitan</h1>")) })
+	var repoGroup *gin.RouterGroup
 	if s.MultiUser {
-		repoGroup = r.Group("/:user/:repo")
+		repoGroup = rootGroup.Group("/:user/:repo")
+	} else {
+		repoGroup = rootGroup.Group("/:repo")
 	}
 	if s.BlobOnly {
 		repoGroup.GET("/:rev/*path", blobHandler(s))
