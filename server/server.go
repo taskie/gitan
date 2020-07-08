@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/k0kubun/pp"
 	log "github.com/sirupsen/logrus"
 	"github.com/taskie/gitan/repo"
 	"github.com/taskie/jc"
@@ -81,7 +80,7 @@ func blobHandler(s *Server) func(c *gin.Context) {
 		path := strings.TrimLeft(c.Param("path"), "/")
 		rev := c.Param("rev")
 		repo := s.Registry[repoKey]
-		pp.Println(s)
+		// pp.Println(s)
 		log.Println(repoKey, path, rev, repo)
 		bs, stat, err := repo.GetFile(path, rev)
 		if err != nil {
@@ -109,7 +108,7 @@ func treeHandler(s *Server) func(c *gin.Context) {
 		path := strings.TrimLeft(c.Param("path"), "/")
 		rev := c.Param("rev")
 		r := s.Registry[repoKey]
-		pp.Println(s)
+		// pp.Println(s)
 		log.Println(repoKey, path, rev, r)
 		var tes []*repo.TreeEntry
 		var err error
