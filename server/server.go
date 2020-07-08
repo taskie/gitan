@@ -13,11 +13,11 @@ import (
 )
 
 type Config struct {
-	Address      string                 `json:"address"`
-	Repos        map[string]*RepoConfig `json:"repos"`
-	MultiUser    bool                   `json:"multi_user"`
-	BlobOnly     bool                   `json:"blob_only"`
-	TreeMaxDepth int                    `json:"tree_max_depth"`
+	Address      string                 `json:"address" toml:"address" yaml:"address"`
+	Repos        map[string]*RepoConfig `json:"repos" toml:"repos" yaml:"address"`
+	MultiUser    bool                   `json:"multi_user" toml:"multi_user" yaml:"address"`
+	BlobOnly     bool                   `json:"blob_only" toml:"blob_only" yaml:"address"`
+	TreeMaxDepth int                    `json:"tree_max_depth" toml:"tree_max_depth" yaml:"address"`
 }
 
 type RepoConfig struct {
@@ -33,6 +33,7 @@ func NewServer(conf *Config) (*Server, error) {
 		}
 		m[k] = r
 	}
+	pp.Println(conf)
 	srv := Server{
 		Address:      conf.Address,
 		Registry:     m,
