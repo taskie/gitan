@@ -3,6 +3,7 @@ package server
 import (
 	"mime"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -58,6 +59,27 @@ type Server struct {
 	BlobOnly     bool
 	TreeMaxDepth int
 	BathPath     string
+}
+
+type RepoSpec struct {
+	Name string `json:"name"`
+}
+
+func listHandler(s *Server) func(c *gin.Context) {
+	return func(c *gin.Context) {
+		repos := make([]*RepoSpec, 0)
+		for repoKey := range s.Registry {
+			if s.MultiUser {
+				if !strings.HasPrefix(repoKey, c.Param("user")+"/") {
+					continue
+				}
+				repoKey = strings.TrimPrefix(repoKey, c.Param("user")+"/")
+			}
+			repos = append(repos, &RepoSpec{repoKey})
+		}
+		sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
+		c.JSON(200, gin.H{"ok": true, "repos": repos})
+	}
 }
 
 func catHandler(s *Server) func(c *gin.Context) {
@@ -128,11 +150,12 @@ func treeHandler(s *Server) func(c *gin.Context) {
 func (s *Server) Run() {
 	r := gin.Default()
 	rootGroup := r.Group(s.BathPath)
-	rootGroup.GET("/", func(c *gin.Context) { c.Data(200, "text/html", []byte("<h1>gitan</h1>")) })
 	var repoGroup *gin.RouterGroup
 	if s.MultiUser {
+		rootGroup.GET("/:user/", listHandler(s))
 		repoGroup = rootGroup.Group("/:user/:repo")
 	} else {
+		rootGroup.GET("/", listHandler(s))
 		repoGroup = rootGroup.Group("/:repo")
 	}
 	if s.BlobOnly {

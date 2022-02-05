@@ -28,7 +28,7 @@ type Repo struct {
 func NewRepo(repoPath string) (*Repo, error) {
 	r, err := git.PlainOpen(repoPath)
 	if err != nil {
-		return nil, errors.Wrap(err, "opening repo failed")
+		return nil, errors.Wrapf(err, "opening repo failed: %s", repoPath)
 	}
 	repo := Repo{
 		repository: r,
