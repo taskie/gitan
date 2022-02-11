@@ -13,17 +13,17 @@ import (
 )
 
 type Config struct {
-	Address      string                 `json:"address" toml:"address" yaml:"address"`
-	Roots        []*RootConfig          `json:"roots" toml:"roots" yaml:"roots"`
-	Repos        map[string]*RepoConfig `json:"repos" toml:"repos" yaml:"address"`
-	MultiUser    bool                   `json:"multi_user" toml:"multi_user" yaml:"address"`
-	BlobOnly     bool                   `json:"blob_only" toml:"blob_only" yaml:"address"`
-	TreeMaxDepth int                    `json:"tree_max_depth" toml:"tree_max_depth" yaml:"address"`
-	BathPath     string                 `json:"base_path" toml:"base_path" yaml:"base_path"`
+	Address      string                 `json:"address" toml:"address"`
+	Roots        []*RootConfig          `json:"roots" toml:"roots"`
+	Repos        map[string]*RepoConfig `json:"repos" toml:"repos"`
+	MultiUser    bool                   `json:"multi_user" toml:"multi_user"`
+	BlobOnly     bool                   `json:"blob_only" toml:"blob_only"`
+	TreeMaxDepth int                    `json:"tree_max_depth" toml:"tree_max_depth"`
+	BathPath     string                 `json:"base_path" toml:"base_path"`
 }
 
 type RepoConfig struct {
-	Path string `json:"path"`
+	Path string `json:"path" toml:"path"`
 }
 
 func NewServer(conf *Config) (*Server, error) {
@@ -211,7 +211,7 @@ func Main(args []string) {
 	if err != nil {
 		conf = &Config{
 			Repos: map[string]*RepoConfig{
-				"gitan": &RepoConfig{
+				"gitan": {
 					Path: ".git",
 				},
 			},

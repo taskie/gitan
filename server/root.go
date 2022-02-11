@@ -10,7 +10,7 @@ import (
 // see https://github.com/x-motemen/ghq/blob/master/local_repository.go
 
 type RootConfig struct {
-	Path string `json:"path"`
+	Path string `json:"path" toml:"path"`
 }
 
 type Root struct {
