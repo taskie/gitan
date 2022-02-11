@@ -14,6 +14,7 @@ import (
 
 type Config struct {
 	Address      string                 `json:"address" toml:"address" yaml:"address"`
+	Roots        []*RootConfig          `json:"roots" toml:"roots" yaml:"roots"`
 	Repos        map[string]*RepoConfig `json:"repos" toml:"repos" yaml:"address"`
 	MultiUser    bool                   `json:"multi_user" toml:"multi_user" yaml:"address"`
 	BlobOnly     bool                   `json:"blob_only" toml:"blob_only" yaml:"address"`
@@ -27,6 +28,22 @@ type RepoConfig struct {
 
 func NewServer(conf *Config) (*Server, error) {
 	m := make(map[string]*repo.Repo)
+	if conf.Roots != nil {
+		for _, rootConf := range conf.Roots {
+			root, err := NewRoot(rootConf)
+			if err != nil {
+				return nil, err
+			}
+			for _, v := range root.Collect() {
+				r, err := repo.NewRepo(v.Path)
+				if err != nil {
+					return nil, err
+				}
+				log.Infof("found %s: %s", v.Name, v.Path)
+				m[v.Name] = r
+			}
+		}
+	}
 	for k, v := range conf.Repos {
 		r, err := repo.NewRepo(v.Path)
 		if err != nil {
