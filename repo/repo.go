@@ -235,6 +235,40 @@ func (r *Repo) GetBlob(hash string) ([]byte, error) {
 	return bs, nil
 }
 
+type Revision struct {
+	Name      string  `json:"name"`
+	ShortName string  `json:"short_name"`
+	CommitID  string  `json:"commit_id"`
+	Commit    *Commit `json:"commit"`
+}
+
+func (r *Repo) GetBranches() ([]*Revision, error) {
+	revs := make([]*Revision, 0)
+	refIter, err := r.repository.Branches()
+	if err != nil {
+		return nil, err
+	}
+	err = refIter.ForEach(func(ref *plumbing.Reference) error {
+		h := ref.Hash()
+		commit, err := r.getCommitWithHash(&h, false)
+		if err != nil || commit == nil {
+			return nil
+		}
+		rev := Revision{
+			Name:      ref.Name().String(),
+			ShortName: ref.Name().Short(),
+			CommitID:  h.String(),
+			Commit:    commit,
+		}
+		revs = append(revs, &rev)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return revs, nil
+}
+
 func (r *Repo) GetCommitHash(rev string) (string, error) {
 	h, err := r.repository.ResolveRevision(plumbing.Revision(rev))
 	if err != nil {
@@ -275,7 +309,11 @@ func (r *Repo) GetCommit(rev string) (*Commit, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "resolving rev failed")
 	}
-	ci, err := r.repository.CommitObject(*h)
+	return r.getCommitWithHash(h, true)
+}
+
+func (r *Repo) getCommitWithHash(hash *plumbing.Hash, fetchFiles bool) (*Commit, error) {
+	ci, err := r.repository.CommitObject(*hash)
 	if err != nil {
 		return nil, errors.Wrap(err, "obtaining commit failed")
 	}
@@ -283,17 +321,20 @@ func (r *Repo) GetCommit(rev string) (*Commit, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "obtaining files failed")
 	}
-	files := make([]*FileStat, 0)
-	fi.ForEach(func(o *object.File) error {
-		file, err := NewFileStat(o)
-		files = append(files, file)
-		if err != nil {
-			return err
-		}
-		return nil
-	})
-	author, err := NewSignature(ci.Author)
-	committer, err := NewSignature(ci.Committer)
+	var files []*FileStat
+	if fetchFiles {
+		files := make([]*FileStat, 0)
+		fi.ForEach(func(o *object.File) error {
+			file, err := NewFileStat(o)
+			files = append(files, file)
+			if err != nil {
+				return err
+			}
+			return nil
+		})
+	}
+	author, _ := NewSignature(ci.Author)
+	committer, _ := NewSignature(ci.Committer)
 	parentHashes := make([]string, 0)
 	for _, hash := range ci.ParentHashes {
 		parentHashes = append(parentHashes, hash.String())

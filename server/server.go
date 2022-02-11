@@ -138,6 +138,27 @@ func blobHandler(s *Server) func(c *gin.Context) {
 	}
 }
 
+func revsHandler(s *Server) func(c *gin.Context) {
+	return func(c *gin.Context) {
+		repoKey := c.Param("repo")
+		if s.MultiUser {
+			repoKey = c.Param("user") + "/" + repoKey
+		}
+		repo := s.Registry[repoKey]
+		if repo == nil {
+			c.JSON(404, gin.H{"ok": false, "error": "not found"})
+		}
+		// pp.Println(s)
+		log.Println(repoKey)
+		branches, err := repo.GetBranches()
+		if err != nil {
+			c.JSON(404, gin.H{"ok": false, "error": err.Error()})
+		} else {
+			c.JSON(200, gin.H{"ok": true, "branches": branches})
+		}
+	}
+}
+
 func treeHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
 		repoKey := c.Param("repo")
@@ -178,6 +199,7 @@ func (s *Server) Run() {
 	if s.BlobOnly {
 		repoGroup.GET("/:rev/*path", blobHandler(s))
 	} else {
+		repoGroup.GET("", revsHandler(s))
 		repoGroup.GET("/blob/:rev/*path", blobHandler(s))
 		repoGroup.GET("/tree/:rev/*path", treeHandler(s))
 		repoGroup.GET("/cat/:hash", catHandler(s))
