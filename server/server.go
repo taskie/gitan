@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"mime"
 	"path/filepath"
 	"sort"
@@ -15,11 +16,14 @@ import (
 type Config struct {
 	Address      string                 `json:"address" toml:"address"`
 	Roots        []*RootConfig          `json:"roots" toml:"roots"`
-	Repos        map[string]*RepoConfig `json:"repos" toml:"repos"`
-	MultiUser    bool                   `json:"multi_user" toml:"multi_user"`
+	Sites        map[string]*SiteConfig `json:"sites" toml:"sites"`
 	BlobOnly     bool                   `json:"blob_only" toml:"blob_only"`
 	TreeMaxDepth int                    `json:"tree_max_depth" toml:"tree_max_depth"`
 	BathPath     string                 `json:"base_path" toml:"base_path"`
+}
+
+type SiteConfig struct {
+	Registry map[string]*RepoConfig `json:"registry" toml:"registry"`
 }
 
 type RepoConfig struct {
@@ -27,12 +31,17 @@ type RepoConfig struct {
 }
 
 func NewServer(conf *Config) (*Server, error) {
-	m := make(map[string]*repo.Repo)
+	sites := make(map[string]*Site)
 	if conf.Roots != nil {
 		for _, rootConf := range conf.Roots {
 			root, err := NewRoot(rootConf)
 			if err != nil {
 				return nil, err
+			}
+			site := sites[root.site]
+			if site == nil {
+				site = &Site{Registry: make(map[string]*repo.Repo)}
+				sites[root.site] = site
 			}
 			for _, v := range root.Collect() {
 				r, err := repo.NewRepo(v.Path)
@@ -40,16 +49,23 @@ func NewServer(conf *Config) (*Server, error) {
 					return nil, err
 				}
 				log.Infof("found %s: %s", v.Name, v.Path)
-				m[v.Name] = r
+				site.Registry[v.Name] = r
 			}
 		}
 	}
-	for k, v := range conf.Repos {
-		r, err := repo.NewRepo(v.Path)
-		if err != nil {
-			return nil, err
+	for siteKey, siteConf := range conf.Sites {
+		for k, v := range siteConf.Registry {
+			r, err := repo.NewRepo(v.Path)
+			if err != nil {
+				return nil, err
+			}
+			site := sites[siteKey]
+			if site == nil {
+				site = &Site{Registry: make(map[string]*repo.Repo)}
+				sites[siteKey] = site
+			}
+			site.Registry[k] = r
 		}
-		m[k] = r
 	}
 	basePath := conf.BathPath
 	if !strings.HasPrefix(basePath, "/") {
@@ -60,8 +76,7 @@ func NewServer(conf *Config) (*Server, error) {
 	}
 	srv := Server{
 		Address:      conf.Address,
-		Registry:     m,
-		MultiUser:    conf.MultiUser,
+		Sites:        sites,
 		BlobOnly:     conf.BlobOnly,
 		TreeMaxDepth: conf.TreeMaxDepth,
 		BathPath:     basePath,
@@ -71,11 +86,14 @@ func NewServer(conf *Config) (*Server, error) {
 
 type Server struct {
 	Address      string
-	Registry     map[string]*repo.Repo
-	MultiUser    bool
+	Sites        map[string]*Site
 	BlobOnly     bool
 	TreeMaxDepth int
 	BathPath     string
+}
+
+type Site struct {
+	Registry map[string]*repo.Repo
 }
 
 type RepoSpec struct {
@@ -84,14 +102,17 @@ type RepoSpec struct {
 
 func listHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
+		site := s.Sites[c.Param("site")]
+		if site == nil {
+			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			return
+		}
 		repos := make([]*RepoSpec, 0)
-		for repoKey := range s.Registry {
-			if s.MultiUser {
-				if !strings.HasPrefix(repoKey, c.Param("user")+"/") {
-					continue
-				}
-				repoKey = strings.TrimPrefix(repoKey, c.Param("user")+"/")
+		for repoKey := range site.Registry {
+			if !strings.HasPrefix(repoKey, c.Param("user")+"/") {
+				continue
 			}
+			repoKey = strings.TrimPrefix(repoKey, c.Param("user")+"/")
 			repos = append(repos, &RepoSpec{repoKey})
 		}
 		sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
@@ -101,7 +122,12 @@ func listHandler(s *Server) func(c *gin.Context) {
 
 func catHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		bs, err := s.Registry[c.Param("repo")].GetBlob(c.Param("hash"))
+		site := s.Sites[c.Param("site")]
+		if site == nil {
+			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			return
+		}
+		bs, err := site.Registry[c.Param("repo")].GetBlob(c.Param("hash"))
 		if err != nil {
 			c.JSON(404, gin.H{"ok": false, "error": err.Error()})
 		} else {
@@ -112,13 +138,15 @@ func catHandler(s *Server) func(c *gin.Context) {
 
 func blobHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		repoKey := c.Param("repo")
-		if s.MultiUser {
-			repoKey = c.Param("user") + "/" + repoKey
+		site := s.Sites[c.Param("site")]
+		if site == nil {
+			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			return
 		}
+		repoKey := c.Param("user") + "/" + c.Param("repo")
 		path := strings.TrimLeft(c.Param("path"), "/")
 		rev := c.Param("rev")
-		repo := s.Registry[repoKey]
+		repo := site.Registry[repoKey]
 		// pp.Println(s)
 		log.Println(repoKey, path, rev, repo)
 		bs, stat, err := repo.GetFile(path, rev)
@@ -140,11 +168,13 @@ func blobHandler(s *Server) func(c *gin.Context) {
 
 func revsHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		repoKey := c.Param("repo")
-		if s.MultiUser {
-			repoKey = c.Param("user") + "/" + repoKey
+		site := s.Sites[c.Param("site")]
+		if site == nil {
+			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			return
 		}
-		repo := s.Registry[repoKey]
+		repoKey := c.Param("user") + "/" + c.Param("repo")
+		repo := site.Registry[repoKey]
 		if repo == nil {
 			c.JSON(404, gin.H{"ok": false, "error": "not found"})
 		}
@@ -161,13 +191,15 @@ func revsHandler(s *Server) func(c *gin.Context) {
 
 func treeHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		repoKey := c.Param("repo")
-		if s.MultiUser {
-			repoKey = c.Param("user") + "/" + repoKey
+		site := s.Sites[c.Param("site")]
+		if site == nil {
+			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			return
 		}
+		repoKey := c.Param("user") + "/" + c.Param("repo")
+		r := site.Registry[repoKey]
 		path := strings.TrimLeft(c.Param("path"), "/")
 		rev := c.Param("rev")
-		r := s.Registry[repoKey]
 		// pp.Println(s)
 		log.Println(repoKey, path, rev, r)
 		var tes []*repo.TreeEntry
@@ -189,13 +221,9 @@ func (s *Server) Run() {
 	r := gin.Default()
 	rootGroup := r.Group(s.BathPath)
 	var repoGroup *gin.RouterGroup
-	if s.MultiUser {
-		rootGroup.GET("/:user/", listHandler(s))
-		repoGroup = rootGroup.Group("/:user/:repo")
-	} else {
-		rootGroup.GET("/", listHandler(s))
-		repoGroup = rootGroup.Group("/:repo")
-	}
+	siteGroup := rootGroup.Group("/:site/")
+	siteGroup.GET("/:user/", listHandler(s))
+	repoGroup = siteGroup.Group("/:user/:repo")
 	if s.BlobOnly {
 		repoGroup.GET("/:rev/*path", blobHandler(s))
 	} else {
@@ -214,7 +242,12 @@ func (s *Server) Run() {
 
 func commitHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		ci, err := s.Registry[c.Param("repo")].GetCommit(c.Param("rev"))
+		site := s.Sites[c.Param("site")]
+		if site == nil {
+			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			return
+		}
+		ci, err := site.Registry[c.Param("repo")].GetCommit(c.Param("rev"))
 		if err != nil {
 			c.JSON(404, gin.H{"ok": false, "error": err.Error()})
 		} else {
@@ -232,9 +265,13 @@ func Main(args []string) {
 	err := jc.DecodeFile(path, "", conf)
 	if err != nil {
 		conf = &Config{
-			Repos: map[string]*RepoConfig{
-				"gitan": {
-					Path: ".git",
+			Sites: map[string]*SiteConfig{
+				"-": {
+					Registry: map[string]*RepoConfig{
+						"-": {
+							Path: ".git",
+						},
+					},
 				},
 			},
 		}

@@ -10,20 +10,24 @@ import (
 // see https://github.com/x-motemen/ghq/blob/master/local_repository.go
 
 type RootConfig struct {
+	Site string `json:"site" toml:"site"`
 	Path string `json:"path" toml:"path"`
 }
 
 type Root struct {
+	site string
 	path string
 }
 
 type FoundRepo struct {
+	Site string
 	Name string
 	Path string
 }
 
 func NewRoot(conf *RootConfig) (*Root, error) {
 	return &Root{
+		site: conf.Site,
 		path: conf.Path,
 	}, nil
 }
@@ -74,6 +78,7 @@ func (r *Root) Collect() []*FoundRepo {
 			return err
 		}
 		paths = append(paths, &FoundRepo{
+			Site: r.site,
 			Name: relpath,
 			Path: gitpath,
 		})
