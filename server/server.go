@@ -23,7 +23,11 @@ type Config struct {
 }
 
 type SiteConfig struct {
-	Registry map[string]*RepoConfig `json:"registry" toml:"registry"`
+	UserRegistries map[string]*UserRegistryConfig `json:"user_registries" toml:"user_registries"`
+}
+
+type UserRegistryConfig struct {
+	Repos map[string]*RepoConfig `json:"repos" toml:"repos"`
 }
 
 type RepoConfig struct {
@@ -38,33 +42,54 @@ func NewServer(conf *Config) (*Server, error) {
 			if err != nil {
 				return nil, err
 			}
-			site := sites[root.site]
+			site := sites[root.siteName]
 			if site == nil {
-				site = &Site{Registry: make(map[string]*repo.Repo)}
-				sites[root.site] = site
+				site = NewSite()
+				sites[root.siteName] = site
 			}
-			for _, v := range root.Collect() {
-				r, err := repo.NewRepo(v.Path)
+			for _, foundRepo := range root.Collect() {
+				r, err := repo.NewRepo(foundRepo.Path)
 				if err != nil {
 					return nil, err
 				}
-				log.Infof("found %s: %s", v.Name, v.Path)
-				site.Registry[v.Name] = r
+				log.Infof("found %s: %s", foundRepo.Name, foundRepo.Path)
+				parts := strings.SplitN(foundRepo.Name, "/", 2)
+				var userName, repoName string
+				if len(parts) == 2 {
+					userName = parts[0]
+					repoName = parts[1]
+				} else {
+					userName = "-"
+					repoName = foundRepo.Name
+				}
+				user := site.UserRegistries[userName]
+				if user == nil {
+					user = NewUserRegistry()
+					site.UserRegistries[userName] = user
+				}
+				user.Repos[repoName] = r
 			}
 		}
 	}
-	for siteKey, siteConf := range conf.Sites {
-		for k, v := range siteConf.Registry {
-			r, err := repo.NewRepo(v.Path)
-			if err != nil {
-				return nil, err
+	for siteName, siteConf := range conf.Sites {
+		for userName, userConf := range siteConf.UserRegistries {
+			for repoName, repoConf := range userConf.Repos {
+				r, err := repo.NewRepo(repoConf.Path)
+				if err != nil {
+					return nil, err
+				}
+				site := sites[siteName]
+				if site == nil {
+					site = NewSite()
+					sites[siteName] = site
+				}
+				user := site.UserRegistries[userName]
+				if user == nil {
+					user = NewUserRegistry()
+					site.UserRegistries[userName] = user
+				}
+				user.Repos[repoName] = r
 			}
-			site := sites[siteKey]
-			if site == nil {
-				site = &Site{Registry: make(map[string]*repo.Repo)}
-				sites[siteKey] = site
-			}
-			site.Registry[k] = r
 		}
 	}
 	basePath := conf.BathPath
@@ -93,27 +118,119 @@ type Server struct {
 }
 
 type Site struct {
-	Registry map[string]*repo.Repo
+	UserRegistries map[string]*UserRegistry
+}
+
+func NewSite() *Site {
+	return &Site{
+		UserRegistries: make(map[string]*UserRegistry),
+	}
+}
+
+type UserRegistry struct {
+	Repos map[string]*repo.Repo
+}
+
+func NewUserRegistry() *UserRegistry {
+	return &UserRegistry{
+		Repos: make(map[string]*repo.Repo),
+	}
+}
+
+func (s *Server) Run() {
+	r := gin.Default()
+	rootGroup := r.Group(s.BathPath)
+	rootGroup.GET("/", listSitesHandler(s))
+	var repoGroup *gin.RouterGroup
+	siteGroup := rootGroup.Group("/:siteName/")
+	siteGroup.GET("/", listUsersHandler(s))
+	siteGroup.GET("/:userName/", listReposHandler(s))
+	repoGroup = siteGroup.Group("/:userName/:repoName")
+	if s.BlobOnly {
+		repoGroup.GET("/:rev/*path", blobHandler(s))
+	} else {
+		repoGroup.GET("", revsHandler(s))
+		repoGroup.GET("/blob/:rev/*path", blobHandler(s))
+		repoGroup.GET("/tree/:rev/*path", treeHandler(s))
+		repoGroup.GET("/cat/:hash", catHandler(s))
+		repoGroup.GET("/commit/:rev", commitHandler(s))
+	}
+	if s.Address != "" {
+		r.Run(s.Address)
+	} else {
+		r.Run()
+	}
+}
+
+func siteNotFound(c *gin.Context, siteName string) {
+	c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", siteName)})
+}
+
+func userNotFound(c *gin.Context, userName string) {
+	c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no user: %s", userName)})
+}
+
+func repoNotFound(c *gin.Context, repoName string) {
+	c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no repo: %s", repoName)})
+}
+
+type SiteSpec struct {
+	Name string `json:"name"`
+}
+
+type UserSpec struct {
+	Name string `json:"name"`
 }
 
 type RepoSpec struct {
 	Name string `json:"name"`
 }
 
-func listHandler(s *Server) func(c *gin.Context) {
+func listSitesHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		site := s.Sites[c.Param("site")]
+		sites := make([]*SiteSpec, 0)
+		for siteName := range s.Sites {
+			sites = append(sites, &SiteSpec{siteName})
+		}
+		sort.Slice(sites, func(i, j int) bool { return sites[i].Name < sites[j].Name })
+		c.JSON(200, gin.H{"ok": true, "sites": sites})
+	}
+}
+
+func listUsersHandler(s *Server) func(c *gin.Context) {
+	return func(c *gin.Context) {
+		siteName := c.Param("siteName")
+		site := s.Sites[siteName]
 		if site == nil {
-			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			siteNotFound(c, siteName)
+			return
+		}
+		users := make([]*UserSpec, 0)
+		for userName := range site.UserRegistries {
+			users = append(users, &UserSpec{userName})
+		}
+		sort.Slice(users, func(i, j int) bool { return users[i].Name < users[j].Name })
+		c.JSON(200, gin.H{"ok": true, "users": users})
+	}
+}
+
+func listReposHandler(s *Server) func(c *gin.Context) {
+	return func(c *gin.Context) {
+		siteName := c.Param("siteName")
+		site := s.Sites[siteName]
+		if site == nil {
+			siteNotFound(c, siteName)
+			return
+		}
+		userName := c.Param("userName")
+		user := site.UserRegistries[userName]
+		if user == nil {
+			userNotFound(c, userName)
 			return
 		}
 		repos := make([]*RepoSpec, 0)
-		for repoKey := range site.Registry {
-			if !strings.HasPrefix(repoKey, c.Param("user")+"/") {
-				continue
-			}
-			repoKey = strings.TrimPrefix(repoKey, c.Param("user")+"/")
-			repos = append(repos, &RepoSpec{repoKey})
+		for repoName := range user.Repos {
+			repos = append(repos, &RepoSpec{repoName})
 		}
 		sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
 		c.JSON(200, gin.H{"ok": true, "repos": repos})
@@ -122,12 +239,25 @@ func listHandler(s *Server) func(c *gin.Context) {
 
 func catHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		site := s.Sites[c.Param("site")]
+		siteName := c.Param("siteName")
+		site := s.Sites[siteName]
 		if site == nil {
-			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			siteNotFound(c, siteName)
 			return
 		}
-		bs, err := site.Registry[c.Param("repo")].GetBlob(c.Param("hash"))
+		userName := c.Param("userName")
+		user := site.UserRegistries[userName]
+		if user == nil {
+			userNotFound(c, userName)
+			return
+		}
+		repoName := c.Param("repoName")
+		repo := user.Repos[repoName]
+		if repo == nil {
+			repoNotFound(c, userName)
+			return
+		}
+		bs, err := repo.GetBlob(c.Param("hash"))
 		if err != nil {
 			c.JSON(404, gin.H{"ok": false, "error": err.Error()})
 		} else {
@@ -138,17 +268,28 @@ func catHandler(s *Server) func(c *gin.Context) {
 
 func blobHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		site := s.Sites[c.Param("site")]
+		siteName := c.Param("siteName")
+		site := s.Sites[siteName]
 		if site == nil {
-			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			siteNotFound(c, siteName)
 			return
 		}
-		repoKey := c.Param("user") + "/" + c.Param("repo")
-		path := strings.TrimLeft(c.Param("path"), "/")
+		userName := c.Param("userName")
+		user := site.UserRegistries[userName]
+		if user == nil {
+			userNotFound(c, userName)
+			return
+		}
+		repoName := c.Param("repoName")
+		repo := user.Repos[repoName]
+		if repo == nil {
+			repoNotFound(c, userName)
+			return
+		}
 		rev := c.Param("rev")
-		repo := site.Registry[repoKey]
+		path := strings.TrimLeft(c.Param("path"), "/")
 		// pp.Println(s)
-		log.Println(repoKey, path, rev, repo)
+		log.Println(repoName, path, rev, repo)
 		bs, stat, err := repo.GetFile(path, rev)
 		if err != nil {
 			c.JSON(404, gin.H{"ok": false, "error": err.Error()})
@@ -168,18 +309,26 @@ func blobHandler(s *Server) func(c *gin.Context) {
 
 func revsHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		site := s.Sites[c.Param("site")]
+		siteName := c.Param("siteName")
+		site := s.Sites[siteName]
 		if site == nil {
-			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			siteNotFound(c, siteName)
 			return
 		}
-		repoKey := c.Param("user") + "/" + c.Param("repo")
-		repo := site.Registry[repoKey]
+		userName := c.Param("userName")
+		user := site.UserRegistries[userName]
+		if user == nil {
+			userNotFound(c, userName)
+			return
+		}
+		repoName := c.Param("repoName")
+		repo := user.Repos[repoName]
 		if repo == nil {
-			c.JSON(404, gin.H{"ok": false, "error": "not found"})
+			repoNotFound(c, userName)
+			return
 		}
 		// pp.Println(s)
-		log.Println(repoKey)
+		log.Println(repoName)
 		branches, err := repo.GetBranches()
 		if err != nil {
 			c.JSON(404, gin.H{"ok": false, "error": err.Error()})
@@ -191,17 +340,28 @@ func revsHandler(s *Server) func(c *gin.Context) {
 
 func treeHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		site := s.Sites[c.Param("site")]
+		siteName := c.Param("siteName")
+		site := s.Sites[siteName]
 		if site == nil {
-			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			siteNotFound(c, siteName)
 			return
 		}
-		repoKey := c.Param("user") + "/" + c.Param("repo")
-		r := site.Registry[repoKey]
+		userName := c.Param("userName")
+		user := site.UserRegistries[userName]
+		if user == nil {
+			userNotFound(c, userName)
+			return
+		}
+		repoName := c.Param("repoName")
+		r := user.Repos[repoName]
+		if r == nil {
+			repoNotFound(c, userName)
+			return
+		}
 		path := strings.TrimLeft(c.Param("path"), "/")
 		rev := c.Param("rev")
 		// pp.Println(s)
-		log.Println(repoKey, path, rev, r)
+		log.Println(repoName, path, rev, r)
 		var tes []*repo.TreeEntry
 		var err error
 		if s.TreeMaxDepth != 0 && c.Query("recursive") == "true" {
@@ -217,37 +377,28 @@ func treeHandler(s *Server) func(c *gin.Context) {
 	}
 }
 
-func (s *Server) Run() {
-	r := gin.Default()
-	rootGroup := r.Group(s.BathPath)
-	var repoGroup *gin.RouterGroup
-	siteGroup := rootGroup.Group("/:site/")
-	siteGroup.GET("/:user/", listHandler(s))
-	repoGroup = siteGroup.Group("/:user/:repo")
-	if s.BlobOnly {
-		repoGroup.GET("/:rev/*path", blobHandler(s))
-	} else {
-		repoGroup.GET("", revsHandler(s))
-		repoGroup.GET("/blob/:rev/*path", blobHandler(s))
-		repoGroup.GET("/tree/:rev/*path", treeHandler(s))
-		repoGroup.GET("/cat/:hash", catHandler(s))
-		repoGroup.GET("/commit/:rev", commitHandler(s))
-	}
-	if s.Address != "" {
-		r.Run(s.Address)
-	} else {
-		r.Run()
-	}
-}
-
 func commitHandler(s *Server) func(c *gin.Context) {
 	return func(c *gin.Context) {
-		site := s.Sites[c.Param("site")]
+		siteName := c.Param("siteName")
+		site := s.Sites[siteName]
 		if site == nil {
-			c.JSON(404, gin.H{"ok": false, "error": fmt.Sprintf("no site: %s", c.Param("site"))})
+			siteNotFound(c, siteName)
 			return
 		}
-		ci, err := site.Registry[c.Param("repo")].GetCommit(c.Param("rev"))
+		userName := c.Param("userName")
+		user := site.UserRegistries[userName]
+		if user == nil {
+			userNotFound(c, userName)
+			return
+		}
+		repoName := c.Param("repoName")
+		repo := user.Repos[repoName]
+		if repo == nil {
+			repoNotFound(c, userName)
+			return
+		}
+		rev := c.Param("rev")
+		ci, err := repo.GetCommit(rev)
 		if err != nil {
 			c.JSON(404, gin.H{"ok": false, "error": err.Error()})
 		} else {
@@ -267,9 +418,13 @@ func Main(args []string) {
 		conf = &Config{
 			Sites: map[string]*SiteConfig{
 				"-": {
-					Registry: map[string]*RepoConfig{
+					UserRegistries: map[string]*UserRegistryConfig{
 						"-": {
-							Path: ".git",
+							Repos: map[string]*RepoConfig{
+								"-": {
+									Path: ".git",
+								},
+							},
 						},
 					},
 				},
